@@ -11,7 +11,10 @@
 int main(void)
 {
     int sock_fd;
+
     struct sockaddr_in server_addr;
+
+    char buffer[1024];
 
     /* 1. Create TCP socket */
     sock_fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -30,7 +33,9 @@ int main(void)
     server_addr.sin_family = AF_INET;
     server_addr.sin_port = htons(SERVER_PORT);
 
-    if (inet_pton(AF_INET, SERVER_IP, &server_addr.sin_addr) <= 0)
+    if (inet_pton(AF_INET,
+                  SERVER_IP,
+                  &server_addr.sin_addr) <= 0)
     {
         perror("inet_pton");
         close(sock_fd);
@@ -48,13 +53,42 @@ int main(void)
     }
 
     printf("[Controller] Connected to Agent %s:%d\n",
-           SERVER_IP, SERVER_PORT);
+           SERVER_IP,
+           SERVER_PORT);
 
-    /* 4. Close connection */
+    /* 4. Send PING command */
+    const char *command = "PING\n";
+
+    send(sock_fd,
+         command,
+         strlen(command),
+         0);
+
+    printf("[Controller] Sent: %s", command);
+
+    /* 5. Receive Agent response */
+    memset(buffer, 0, sizeof(buffer));
+
+    ssize_t bytes_received = recv(sock_fd,
+                                  buffer,
+                                  sizeof(buffer) - 1,
+                                  0);
+
+    if (bytes_received < 0)
+    {
+        perror("recv");
+        close(sock_fd);
+        return 1;
+    }
+
+    buffer[bytes_received] = '\0';
+
+    printf("[Controller] Received: %s", buffer);
+
+    /* 6. Close connection */
     close(sock_fd);
 
     printf("[Controller] Disconnected.\n");
 
     return 0;
 }
-
