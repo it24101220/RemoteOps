@@ -8,6 +8,7 @@
 #define PORT 9410
 #define BACKLOG 5
 #define SID "0221"
+#define AUTH_TOKEN "OPS-1220"
 
 int main(void)
 {
@@ -21,7 +22,6 @@ int main(void)
 
     char buffer[1024];
 
-    /* 1. Create TCP socket */
     server_fd = socket(AF_INET, SOCK_STREAM, 0);
 
     if (server_fd < 0)
@@ -32,7 +32,6 @@ int main(void)
 
     printf("[Agent] Socket created successfully.\n");
 
-    /* 2. Allow address reuse */
     int opt = 1;
 
     if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR,
@@ -43,14 +42,12 @@ int main(void)
         return 1;
     }
 
-    /* 3. Configure server address */
     memset(&server_addr, 0, sizeof(server_addr));
 
     server_addr.sin_family = AF_INET;
     server_addr.sin_addr.s_addr = INADDR_ANY;
     server_addr.sin_port = htons(PORT);
 
-    /* 4. Bind */
     if (bind(server_fd,
              (struct sockaddr *)&server_addr,
              sizeof(server_addr)) < 0)
@@ -62,7 +59,6 @@ int main(void)
 
     printf("[Agent] Bound to port %d.\n", PORT);
 
-    /* 5. Listen */
     if (listen(server_fd, BACKLOG) < 0)
     {
         perror("listen");
@@ -72,7 +68,6 @@ int main(void)
 
     printf("[Agent] Listening for Controller connections...\n");
 
-    /* 6. Accept Controllers continuously */
     while (1)
     {
         client_len = sizeof(client_addr);
@@ -89,10 +84,11 @@ int main(void)
 
         printf("[Agent] Controller connected.\n");
 
-        /* Clear receive buffer */
+        /* Each new connection starts unauthenticated */
+        int authenticated = 0;
+
         memset(buffer, 0, sizeof(buffer));
 
-        /* Receive command */
         ssize_t bytes_received = recv(client_fd,
                                       buffer,
                                       sizeof(buffer) - 1,
@@ -109,30 +105,70 @@ int main(void)
 
         printf("[Agent] Received: %s", buffer);
 
-        /* Handle PING command */
-        if (strcmp(buffer, "PING\n") == 0)
+        /*
+         * AUTH command
+         */
+        if (strncmp(buffer, "AUTH ", 5) == 0)
         {
-            const char *response =
-                "OK PONG SID:0221\n";
+            char token[256];
 
-            send(client_fd,
-                 response,
-                 strlen(response),
-                 0);
+            memset(token, 0, sizeof(token));
 
-            printf("[Agent] Sent: %s", response);
+            sscanf(buffer + 5, "%255s", token);
+
+            if (strcmp(token, AUTH_TOKEN) == 0)
+            {
+                authenticated = 1;
+
+                const char *response =
+                    "OK AUTHENTICATED SID:0221\n";
+
+                send(client_fd,
+                     response,
+                     strlen(response),
+                     0);
+
+                printf("[Agent] Authentication successful.\n");
+                printf("[Agent] Sent: %s", response);
+            }
+            else
+            {
+                const char *response =
+                    "ERR 001 AUTH_FAILED SID:0221\n";
+
+                send(client_fd,
+                     response,
+                     strlen(response),
+                     0);
+
+                printf("[Agent] Authentication failed.\n");
+                printf("[Agent] Sent: %s", response);
+            }
         }
         else
         {
+            /*
+             * Any command before AUTH is rejected.
+             */
             const char *response =
-                "ERR 400 UNKNOWN_COMMAND SID:0221\n";
+                "ERR 001 AUTH_REQUIRED SID:0221\n";
 
             send(client_fd,
                  response,
                  strlen(response),
                  0);
 
+            printf("[Agent] Command rejected because client is not authenticated.\n");
             printf("[Agent] Sent: %s", response);
+        }
+
+        /*
+         * Prevent unused-variable warning for now.
+         * Later this variable will control all commands.
+         */
+        if (authenticated)
+        {
+            printf("[Agent] Client is authenticated.\n");
         }
 
         close(client_fd);
@@ -144,4 +180,3 @@ int main(void)
 
     return 0;
 }
-

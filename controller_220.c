@@ -16,7 +16,6 @@ int main(void)
 
     char buffer[1024];
 
-    /* 1. Create TCP socket */
     sock_fd = socket(AF_INET, SOCK_STREAM, 0);
 
     if (sock_fd < 0)
@@ -27,7 +26,6 @@ int main(void)
 
     printf("[Controller] Socket created successfully.\n");
 
-    /* 2. Configure Agent address */
     memset(&server_addr, 0, sizeof(server_addr));
 
     server_addr.sin_family = AF_INET;
@@ -42,7 +40,6 @@ int main(void)
         return 1;
     }
 
-    /* 3. Connect to Agent */
     if (connect(sock_fd,
                 (struct sockaddr *)&server_addr,
                 sizeof(server_addr)) < 0)
@@ -56,8 +53,8 @@ int main(void)
            SERVER_IP,
            SERVER_PORT);
 
-    /* 4. Send PING command */
-    const char *command = "PING\n";
+    /* Send AUTH command */
+    const char *command = "AUTH OPS-1220\n";
 
     send(sock_fd,
          command,
@@ -66,7 +63,7 @@ int main(void)
 
     printf("[Controller] Sent: %s", command);
 
-    /* 5. Receive Agent response */
+    /* Receive response */
     memset(buffer, 0, sizeof(buffer));
 
     ssize_t bytes_received = recv(sock_fd,
@@ -85,7 +82,6 @@ int main(void)
 
     printf("[Controller] Received: %s", buffer);
 
-    /* 6. Close connection */
     close(sock_fd);
 
     printf("[Controller] Disconnected.\n");
