@@ -8,13 +8,68 @@
 #define SERVER_IP "127.0.0.1"
 #define SERVER_PORT 9410
 
+#define BUFFER_SIZE 1024
+
+int send_all(int socket_fd, const char *data, size_t length)
+{
+    size_t total_sent = 0;
+
+    while (total_sent < length)
+    {
+        ssize_t sent = send(socket_fd,
+                            data + total_sent,
+                            length - total_sent,
+                            0);
+
+        if (sent <= 0)
+        {
+            return -1;
+        }
+
+        total_sent += sent;
+    }
+
+    return 0;
+}
+
+int recv_line(int socket_fd, char *buffer, size_t size)
+{
+    size_t position = 0;
+
+    while (position < size - 1)
+    {
+        char character;
+
+        ssize_t received = recv(socket_fd,
+                                &character,
+                                1,
+                                0);
+
+        if (received <= 0)
+        {
+            return -1;
+        }
+
+        buffer[position++] = character;
+
+        if (character == '\n')
+        {
+            break;
+        }
+    }
+
+    buffer[position] = '\0';
+
+    return 0;
+}
+
 int main(void)
 {
     int sock_fd;
 
     struct sockaddr_in server_addr;
 
-    char buffer[1024];
+    char buffer[BUFFER_SIZE];
 
     sock_fd = socket(AF_INET, SOCK_STREAM, 0);
 
@@ -53,32 +108,69 @@ int main(void)
            SERVER_IP,
            SERVER_PORT);
 
-    /* Send AUTH command */
-    const char *command = "AUTH OPS-1220\n";
+    /*
+     * AUTH
+     */
+    const char *auth_command = "AUTH OPS-1220\n";
 
-    send(sock_fd,
-         command,
-         strlen(command),
-         0);
+    send_all(sock_fd,
+             auth_command,
+             strlen(auth_command));
 
-    printf("[Controller] Sent: %s", command);
+    printf("[Controller] Sent: %s", auth_command);
 
-    /* Receive response */
-    memset(buffer, 0, sizeof(buffer));
-
-    ssize_t bytes_received = recv(sock_fd,
-                                  buffer,
-                                  sizeof(buffer) - 1,
-                                  0);
-
-    if (bytes_received < 0)
+    if (recv_line(sock_fd,
+                  buffer,
+                  sizeof(buffer)) < 0)
     {
-        perror("recv");
+        printf("[Controller] Connection closed.\n");
         close(sock_fd);
         return 1;
     }
 
-    buffer[bytes_received] = '\0';
+    printf("[Controller] Received: %s", buffer);
+
+    /*
+     * SYSINFO
+     */
+    const char *sysinfo_command = "SYSINFO\n";
+
+    send_all(sock_fd,
+             sysinfo_command,
+             strlen(sysinfo_command));
+
+    printf("[Controller] Sent: %s", sysinfo_command);
+
+    if (recv_line(sock_fd,
+                  buffer,
+                  sizeof(buffer)) < 0)
+    {
+        printf("[Controller] Connection closed.\n");
+        close(sock_fd);
+        return 1;
+    }
+
+    printf("[Controller] Received: %s", buffer);
+
+    /*
+     * QUIT
+     */
+    const char *quit_command = "QUIT\n";
+
+    send_all(sock_fd,
+             quit_command,
+             strlen(quit_command));
+
+    printf("[Controller] Sent: %s", quit_command);
+
+    if (recv_line(sock_fd,
+                  buffer,
+                  sizeof(buffer)) < 0)
+    {
+        printf("[Controller] Connection closed.\n");
+        close(sock_fd);
+        return 1;
+    }
 
     printf("[Controller] Received: %s", buffer);
 
