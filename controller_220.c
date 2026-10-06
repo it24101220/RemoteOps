@@ -8,7 +8,7 @@
 #define SERVER_IP "127.0.0.1"
 #define SERVER_PORT 9410
 
-#define BUFFER_SIZE 1024
+#define BUFFER_SIZE 16384
 
 int send_all(int socket_fd, const char *data, size_t length)
 {
@@ -152,6 +152,48 @@ int main(void)
 
     printf("[Controller] Received: %s", buffer);
 
+
+           const char *listproc_command = "LISTPROC\n";
+
+send_all(sock_fd,
+         listproc_command,
+         strlen(listproc_command));
+
+printf("[Controller] Sent: %s", listproc_command);
+
+if (recv_line(sock_fd,
+              buffer,
+              sizeof(buffer)) < 0)
+{
+    printf("[Controller] Connection closed.\n");
+    close(sock_fd);
+    return 1;
+}
+
+printf("[Controller] Received: %s", buffer);
+
+
+     /*
+ * EXEC DATE
+ */
+const char *exec_command = "EXEC UPTIME\n";
+
+send_all(sock_fd,
+         exec_command,
+         strlen(exec_command));
+
+printf("[Controller] Sent: %s", exec_command);
+
+if (recv_line(sock_fd,
+              buffer,
+              sizeof(buffer)) < 0)
+{
+    printf("[Controller] Connection closed.\n");
+    close(sock_fd);
+    return 1;
+}
+
+printf("[Controller] Received: %s", buffer);
     /*
      * QUIT
      */

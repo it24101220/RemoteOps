@@ -10,7 +10,8 @@
 #define SID "0221"
 #define AUTH_TOKEN "OPS-1220"
 
-#define BUFFER_SIZE 1024
+#define BUFFER_SIZE 16384
+
 
 /*
  * Send all bytes in a buffer.
@@ -151,7 +152,143 @@ int get_sysinfo(double *cpu_load,
 
     return 0;
 }
+int get_process_list(char *output, size_t output_size)
+{
+    FILE *process_file;
+    char line[256];
+    size_t used = 0;
 
+    process_file = popen("ps -e -o pid=,comm=", "r");
+
+    if (process_file == NULL)
+    {
+        return -1;
+    }
+
+    while (fgets(line, sizeof(line), process_file) != NULL)
+    {
+        int pid;
+        char process_name[128];
+
+        if (sscanf(line, "%d %127s", &pid, process_name) == 2)
+        {
+            int written;
+
+            written = snprintf(output + used,
+                               output_size - used,
+                               "%d:%s,",
+                               pid,
+                               process_name);
+
+            if (written < 0)
+            {
+                pclose(process_file);
+                return -1;
+            }
+
+            if ((size_t)written >= output_size - used)
+            {
+                break;
+            }
+
+            used += (size_t)written;
+        }
+    }
+
+    pclose(process_file);
+
+    if (used > 0 && output[used - 1] == ',')
+    {
+        output[used - 1] = '\0';
+    }
+    else
+    {
+        output[used] = '\0';
+    }
+
+    return 0;
+}
+int execute_allowed_command(const char *command,
+                            char *output,
+                            size_t output_size)
+{
+    FILE *process;
+
+    char command_buffer[128];
+
+    /*
+     * Only the five allowed commands are accepted.
+     */
+    if (strcmp(command, "DATE") == 0)
+    {
+        snprintf(command_buffer,
+                 sizeof(command_buffer),
+                 "date");
+    }
+    else if (strcmp(command, "UPTIME") == 0)
+    {
+        snprintf(command_buffer,
+                 sizeof(command_buffer),
+                 "uptime");
+    }
+    else if (strcmp(command, "DISKFREE") == 0)
+    {
+        snprintf(command_buffer,
+                 sizeof(command_buffer),
+                 "df -h /");
+    }
+    else if (strcmp(command, "HOSTNAME") == 0)
+    {
+        snprintf(command_buffer,
+                 sizeof(command_buffer),
+                 "hostname");
+    }
+    else if (strcmp(command, "WHOAMI") == 0)
+    {
+        snprintf(command_buffer,
+                 sizeof(command_buffer),
+                 "whoami");
+    }
+    else
+    {
+        return -2;
+    }
+
+    process = popen(command_buffer, "r");
+
+    if (process == NULL)
+    {
+        return -1;
+    }
+
+    output[0] = '\0';
+
+    while (fgets(output + strlen(output),
+                 output_size - strlen(output),
+                 process) != NULL)
+    {
+        if (strlen(output) >= output_size - 1)
+        {
+            break;
+        }
+    }
+
+    pclose(process);
+
+    /*
+     * EXEC response must be one protocol line.
+     * Replace newline characters with spaces.
+     */
+    for (size_t i = 0; output[i] != '\0'; i++)
+    {
+        if (output[i] == '\n' || output[i] == '\r')
+        {
+            output[i] = ' ';
+        }
+    }
+
+    return 0;
+}
 int main(void)
 {
     int server_fd;
@@ -381,6 +518,122 @@ int main(void)
                 continue;
             }
 
+              if (strcmp(buffer, "LISTPROC\n") == 0)
+{
+    char process_list[12000];
+    char response[14000];
+
+    memset(process_list, 0, sizeof(process_list));
+
+    if (get_process_list(process_list,
+                         sizeof(process_list)) == 0)
+    {
+        snprintf(response,
+                 sizeof(response),
+                 "OK PROCS %s SID:%s\n",
+                 process_list,
+                 SID);
+
+        send_all(client_fd,
+                 response,
+                 strlen(response));
+
+        printf("[Agent] Sent LISTPROC response.\n");
+    }
+    else
+    {
+        char error_response[128];
+
+        snprintf(error_response,
+                 sizeof(error_response),
+                 "ERR 003 PROCESS_LIST_FAILED SID:%s\n",
+                 SID);
+
+        send_all(client_fd,
+                 error_response,
+                 strlen(error_response));
+    }
+
+    continue;
+}
+         /*
+ * EXEC
+ */
+if (strncmp(buffer, "EXEC ", 5) == 0)
+{
+    char command_name[64];
+    char command_output[4096];
+    char response[8192];
+
+    memset(command_name, 0, sizeof(command_name));
+    memset(command_output, 0, sizeof(command_output));
+
+    /*
+     * Extract command after "EXEC ".
+     */
+    sscanf(buffer + 5,
+           "%63s",
+           command_name);
+
+    int result = execute_allowed_command(command_name,
+                                         command_output,
+                                         sizeof(command_output));
+
+    /*
+     * Command is not in the whitelist.
+     */
+    if (result == -2)
+    {
+        snprintf(response,
+                 sizeof(response),
+                 "ERR 002 COMMAND_NOT_ALLOWED SID:%s\n",
+                 SID);
+
+        send_all(client_fd,
+                 response,
+                 strlen(response));
+
+        printf("[Agent] EXEC rejected: %s\n",
+               command_name);
+
+        continue;
+    }
+
+    /*
+     * Execution failed.
+     */
+    if (result == -1)
+    {
+        snprintf(response,
+                 sizeof(response),
+                 "ERR 003 EXEC_FAILED SID:%s\n",
+                 SID);
+
+        send_all(client_fd,
+                 response,
+                 strlen(response));
+
+        continue;
+    }
+
+    /*
+     * Successful EXEC.
+     */
+    snprintf(response,
+             sizeof(response),
+             "OK EXEC_RESULT %s SID:%s\n",
+             command_output,
+             SID);
+
+    send_all(client_fd,
+             response,
+             strlen(response));
+
+    printf("[Agent] EXEC successful: %s\n",
+           command_name);
+
+    continue;
+}
             /*
              * Unknown command.
              */
