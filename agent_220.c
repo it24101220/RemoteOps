@@ -311,6 +311,102 @@ int execute_allowed_command(const char *command,
     return 0;
 }
 
+
+struct monitor_context
+{
+    int udp_fd;
+    struct sockaddr_in destination;
+};
+
+static void get_monitor_stats(double *cpu,
+                              long *mem,
+                              unsigned long *uptime)
+{
+    FILE *fp;
+    char line[256];
+
+    *cpu = 0.0;
+    *mem = 0;
+    *uptime = 0;
+
+    fp = fopen("/proc/loadavg", "r");
+    if (fp != NULL)
+    {
+        fscanf(fp, "%lf", cpu);
+        fclose(fp);
+    }
+
+    long total = 0;
+    long available = 0;
+
+    fp = fopen("/proc/meminfo", "r");
+    if (fp != NULL)
+    {
+        while (fgets(line, sizeof(line), fp) != NULL)
+        {
+            sscanf(line, "MemTotal: %ld kB", &total);
+            sscanf(line, "MemAvailable: %ld kB", &available);
+        }
+
+        fclose(fp);
+
+        if (total > 0)
+        {
+            *mem = (total - available) / 1024;
+        }
+    }
+
+    fp = fopen("/proc/uptime", "r");
+    if (fp != NULL)
+    {
+        double value = 0;
+
+        fscanf(fp, "%lf", &value);
+
+        *uptime = (unsigned long)value;
+
+        fclose(fp);
+    }
+}
+
+static void *monitor_thread_function(void *arg)
+{
+    struct monitor_context *ctx =
+        (struct monitor_context *)arg;
+
+    while (1)
+    {
+        double cpu;
+        long mem;
+        unsigned long uptime;
+
+        char message[256];
+
+        get_monitor_stats(&cpu,
+                          &mem,
+                          &uptime);
+
+        snprintf(message,
+                 sizeof(message),
+                 "SYSINFO %.2f %ld %lu SID:%s\n",
+                 cpu,
+                 mem,
+                 uptime,
+                 SID);
+
+        sendto(ctx->udp_fd,
+               message,
+               strlen(message),
+               0,
+               (struct sockaddr *)&ctx->destination,
+               sizeof(ctx->destination));
+
+        sleep(2);
+    }
+
+    return NULL;
+}
+
 void *handle_client(void *arg)
 {
     int client_fd = *(int *)arg;
@@ -318,6 +414,10 @@ void *handle_client(void *arg)
 
     int authenticated = 0;
 
+    int monitor_active = 0;
+    int monitor_udp_fd = -1;
+    pthread_t monitor_thread;
+    struct monitor_context *monitor_ctx = NULL;
 
     while (1)
     {
@@ -821,6 +921,223 @@ if (strncmp(buffer, "PUT ", 4) == 0)
                file_size);
 
         continue;
+        }
+
+        /*
+         * MONITOR START <udp_port>
+         */
+        if (strncmp(buffer, "MONITOR START ", 14) == 0)
+        {
+            int udp_port;
+
+            if (!authenticated)
+            {
+                char response[128];
+
+                snprintf(response,
+                         sizeof(response),
+                         "ERR 003 AUTH_REQUIRED SID:%s\n",
+                         SID);
+
+                send_all(client_fd,
+                         response,
+                         strlen(response));
+
+                continue;
+            }
+
+            if (monitor_active)
+            {
+                char response[128];
+
+                snprintf(response,
+                         sizeof(response),
+                         "ERR 006 MONITOR_ALREADY_RUNNING SID:%s\n",
+                         SID);
+
+                send_all(client_fd,
+                         response,
+                         strlen(response));
+
+                continue;
+            }
+
+            if (sscanf(buffer + 14,
+                       "%d",
+                       &udp_port) != 1 ||
+                udp_port < 1 ||
+                udp_port > 65535)
+            {
+                char response[128];
+
+                snprintf(response,
+                         sizeof(response),
+                         "ERR 007 INVALID_UDP_PORT SID:%s\n",
+                         SID);
+
+                send_all(client_fd,
+                         response,
+                         strlen(response));
+
+                continue;
+            }
+
+            monitor_udp_fd =
+                socket(AF_INET, SOCK_DGRAM, 0);
+
+            if (monitor_udp_fd < 0)
+            {
+                perror("[Agent] UDP socket");
+                continue;
+            }
+
+            monitor_ctx =
+                malloc(sizeof(struct monitor_context));
+
+            if (monitor_ctx == NULL)
+            {
+                close(monitor_udp_fd);
+                monitor_udp_fd = -1;
+                continue;
+            }
+
+            memset(monitor_ctx,
+                   0,
+                   sizeof(struct monitor_context));
+
+            monitor_ctx->udp_fd = monitor_udp_fd;
+
+            monitor_ctx->destination.sin_family =
+                AF_INET;
+
+            monitor_ctx->destination.sin_port =
+                htons((uint16_t)udp_port);
+
+            {
+                struct sockaddr_in peer;
+                socklen_t peer_len = sizeof(peer);
+
+                memset(&peer, 0, sizeof(peer));
+
+                if (getpeername(
+                        client_fd,
+                        (struct sockaddr *)&peer,
+                        &peer_len) == 0)
+                {
+                    monitor_ctx->destination.sin_addr =
+                        peer.sin_addr;
+                }
+                else
+                {
+                    inet_pton(
+                        AF_INET,
+                        "127.0.0.1",
+                        &monitor_ctx->destination.sin_addr);
+                }
+            }
+
+            if (pthread_create(
+                    &monitor_thread,
+                    NULL,
+                    monitor_thread_function,
+                    monitor_ctx) != 0)
+            {
+                free(monitor_ctx);
+                monitor_ctx = NULL;
+
+                close(monitor_udp_fd);
+                monitor_udp_fd = -1;
+
+                continue;
+            }
+
+            monitor_active = 1;
+
+            {
+                char response[128];
+
+                snprintf(response,
+                         sizeof(response),
+                         "OK MONITOR_STARTED SID:%s\n",
+                         SID);
+
+                send_all(client_fd,
+                         response,
+                         strlen(response));
+            }
+
+            printf("[Agent] UDP monitoring started on port %d.\n",
+                   udp_port);
+
+            continue;
+        }
+
+        /*
+         * MONITOR STOP
+         */
+        if (strcmp(buffer, "MONITOR STOP\n") == 0)
+        {
+            if (!authenticated)
+            {
+                char response[128];
+
+                snprintf(response,
+                         sizeof(response),
+                         "ERR 003 AUTH_REQUIRED SID:%s\n",
+                         SID);
+
+                send_all(client_fd,
+                         response,
+                         strlen(response));
+
+                continue;
+            }
+
+            if (!monitor_active)
+            {
+                char response[128];
+
+                snprintf(response,
+                         sizeof(response),
+                         "ERR 009 MONITOR_NOT_RUNNING SID:%s\n",
+                         SID);
+
+                send_all(client_fd,
+                         response,
+                         strlen(response));
+
+                continue;
+            }
+
+            pthread_cancel(monitor_thread);
+            pthread_join(monitor_thread, NULL);
+
+            close(monitor_udp_fd);
+
+            monitor_udp_fd = -1;
+
+            free(monitor_ctx);
+
+            monitor_ctx = NULL;
+
+            monitor_active = 0;
+
+            {
+                char response[128];
+
+                snprintf(response,
+                         sizeof(response),
+                         "OK MONITOR_STOPPED SID:%s\n",
+                         SID);
+
+                send_all(client_fd,
+                         response,
+                         strlen(response));
+            }
+
+            printf("[Agent] UDP monitoring stopped.\n");
+
+            continue;
         }
 
         /*

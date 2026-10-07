@@ -406,6 +406,106 @@ if (send_file(sock_fd, "test_upload.txt") == 0)
     }
 
     /*
+     * UDP MONITORING
+     */
+    {
+        int udp_fd;
+        struct sockaddr_in udp_addr;
+        char udp_buffer[512];
+
+        udp_fd = socket(AF_INET, SOCK_DGRAM, 0);
+
+        if (udp_fd < 0)
+        {
+            perror("[Controller] UDP socket");
+        }
+        else
+        {
+            memset(&udp_addr, 0, sizeof(udp_addr));
+
+            udp_addr.sin_family = AF_INET;
+            udp_addr.sin_port = htons(9500);
+            udp_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+
+            if (bind(udp_fd,
+                     (struct sockaddr *)&udp_addr,
+                     sizeof(udp_addr)) < 0)
+            {
+                perror("[Controller] UDP bind");
+                close(udp_fd);
+            }
+            else
+            {
+                const char *monitor_start =
+                    "MONITOR START 9500\n";
+
+                send_all(sock_fd,
+                         monitor_start,
+                         strlen(monitor_start));
+
+                printf("[Controller] Sent: %s",
+                       monitor_start);
+
+                if (recv_line(sock_fd,
+                              buffer,
+                              sizeof(buffer)) >= 0)
+                {
+                    printf("[Controller] Received: %s",
+                           buffer);
+                }
+
+                /*
+                 * Receive two UDP monitoring packets.
+                 */
+                for (int i = 0; i < 2; i++)
+                {
+                    ssize_t n;
+
+                    n = recvfrom(udp_fd,
+                                 udp_buffer,
+                                 sizeof(udp_buffer) - 1,
+                                 0,
+                                 NULL,
+                                 NULL);
+
+                    if (n > 0)
+                    {
+                        udp_buffer[n] = '\0';
+
+                        printf("[Controller] UDP received: %s",
+                               udp_buffer);
+                    }
+                }
+
+                /*
+                 * Stop monitoring.
+                 */
+                {
+                    const char *monitor_stop =
+                        "MONITOR STOP\n";
+
+                    send_all(sock_fd,
+                             monitor_stop,
+                             strlen(monitor_stop));
+
+                    printf("[Controller] Sent: %s",
+                           monitor_stop);
+
+                    if (recv_line(sock_fd,
+                                  buffer,
+                                  sizeof(buffer)) >= 0)
+                    {
+                        printf("[Controller] Received: %s",
+                               buffer);
+                    }
+                }
+
+                close(udp_fd);
+            }
+        }
+    }
+
+    /*
      * QUIT
      */
     const char *quit_command = "QUIT\n";
