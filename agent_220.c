@@ -5,6 +5,7 @@
 #include <arpa/inet.h>
 #include <sys/socket.h>
 #include <pthread.h>
+#include <time.h>
 
 #define PORT 9410
 #define BACKLOG 5
@@ -13,6 +14,45 @@
 
 #define BUFFER_SIZE 16384
 #define MAX_FILE_SIZE (10 * 1024 * 1024)
+
+#define LOG_FILE "remoteops_IT24101220.log"
+
+void write_log(const char *event)
+{
+    FILE *log_file;
+    time_t now;
+    struct tm *tm_info;
+    char timestamp[64];
+
+    now = time(NULL);
+    tm_info = localtime(&now);
+
+    if (tm_info == NULL)
+    {
+        return;
+    }
+
+    strftime(timestamp,
+             sizeof(timestamp),
+             "%Y-%m-%d %H:%M:%S",
+             tm_info);
+
+    log_file = fopen(LOG_FILE, "a");
+
+    if (log_file == NULL)
+    {
+        return;
+    }
+
+    fprintf(log_file,
+            "[%s] %s\n",
+            timestamp,
+            event);
+
+    fclose(log_file);
+}
+
+
 
 /*
  * Send all bytes in a buffer.
@@ -428,10 +468,12 @@ void *handle_client(void *arg)
               sizeof(buffer)) < 0)
         {
         printf("[Agent] Controller disconnected.\n");
+        write_log("Controller connection closed");
         break;
         }
 
         printf("[Agent] Received: %s", buffer);
+        write_log(buffer);
 
         /*
          * AUTH
@@ -1238,6 +1280,7 @@ int main(void)
         }
 
         printf("[Agent] Controller connected.\n");
+        write_log("Controller connected");
 
         int *client_socket = malloc(sizeof(int));
 
