@@ -11,7 +11,7 @@
 #define AUTH_TOKEN "OPS-1220"
 
 #define BUFFER_SIZE 16384
-
+#define MAX_FILE_SIZE (10 * 1024 * 1024)
 
 /*
  * Send all bytes in a buffer.
@@ -33,6 +33,26 @@ int send_all(int socket_fd, const char *data, size_t length)
         }
 
         total_sent += sent;
+    }
+
+    return 0;
+}
+
+int recv_exact(int socket_fd, char *buffer, size_t length)
+{
+    size_t total_received = 0;
+
+    while (total_received < length) {
+        ssize_t received = recv(socket_fd,
+                                buffer + total_received,
+                                length - total_received,
+                                0);
+
+        if (received <= 0) {
+            return -1;
+        }
+
+        total_received += (size_t)received;
     }
 
     return 0;
@@ -631,6 +651,151 @@ if (strncmp(buffer, "EXEC ", 5) == 0)
 
     printf("[Agent] EXEC successful: %s\n",
            command_name);
+
+    continue;
+}
+
+/*
+ * PUT
+ */
+if (strncmp(buffer, "PUT ", 4) == 0)
+{
+    char filename[256];
+    long file_size;
+
+    if (sscanf(buffer + 4,
+               "%255s %ld",
+               filename,
+               &file_size) != 2)
+    {
+        char response[128];
+
+        snprintf(response,
+                 sizeof(response),
+                 "ERR 400 UNKNOWN_COMMAND SID:%s\n",
+                 SID);
+
+        send_all(client_fd,
+                 response,
+                 strlen(response));
+
+        continue;
+    }
+
+    if (file_size < 0 || file_size > MAX_FILE_SIZE)
+    {
+        char response[128];
+
+        snprintf(response,
+                 sizeof(response),
+                 "ERR 004 FILE_TOO_LARGE SID:%s\n",
+                 SID);
+
+        send_all(client_fd,
+                 response,
+                 strlen(response));
+
+        continue;
+    }
+
+    if (strstr(filename, "..") != NULL ||
+        strchr(filename, '/') != NULL ||
+        strchr(filename, '\\') != NULL)
+    {
+        char response[128];
+
+        snprintf(response,
+                 sizeof(response),
+                 "ERR 400 UNKNOWN_COMMAND SID:%s\n",
+                 SID);
+
+        send_all(client_fd,
+                 response,
+                 strlen(response));
+
+        continue;
+    }
+
+    char filepath[512];
+
+    snprintf(filepath,
+             sizeof(filepath),
+             "./agentfiles/IT24101220/%s",
+             filename);
+
+    FILE *file = fopen(filepath, "wb");
+
+    if (file == NULL)
+    {
+        perror("[Agent] fopen");
+
+        continue;
+    }
+
+    char file_buffer[4096];
+    long remaining = file_size;
+    int file_error = 0;
+
+    while (remaining > 0)
+    {
+        size_t chunk_size;
+
+        if (remaining > (long)sizeof(file_buffer))
+        {
+            chunk_size = sizeof(file_buffer);
+        }
+        else
+        {
+            chunk_size = (size_t)remaining;
+        }
+
+        if (recv_exact(client_fd,
+                       file_buffer,
+                       chunk_size) < 0)
+        {
+            file_error = 1;
+            break;
+        }
+
+        if (fwrite(file_buffer,
+                   1,
+                   chunk_size,
+                   file) != chunk_size)
+        {
+            file_error = 1;
+            break;
+        }
+
+        remaining -= (long)chunk_size;
+    }
+
+    fclose(file);
+
+    if (file_error)
+    {
+        remove(filepath);
+
+        printf("[Agent] File transfer failed: %s\n",
+               filename);
+
+        continue;
+    }
+
+    printf("[Agent] File received: %s (%ld bytes)\n",
+           filename,
+           file_size);
+
+    char response[512];
+
+    snprintf(response,
+             sizeof(response),
+             "OK FILE_RECEIVED %s SID:%s\n",
+             filename,
+             SID);
+
+    send_all(client_fd,
+             response,
+             strlen(response));
 
     continue;
 }

@@ -63,6 +63,72 @@ int recv_line(int socket_fd, char *buffer, size_t size)
     return 0;
 }
 
+int send_file(int socket_fd, const char *filename)
+{
+    FILE *file = fopen(filename, "rb");
+
+    if (file == NULL)
+    {
+        perror("fopen");
+        return -1;
+    }
+
+    fseek(file, 0, SEEK_END);
+    long file_size = ftell(file);
+    fseek(file, 0, SEEK_SET);
+
+    if (file_size < 0)
+    {
+        fclose(file);
+        return -1;
+    }
+
+    char command[BUFFER_SIZE];
+
+    snprintf(command,
+             sizeof(command),
+             "PUT %s %ld\n",
+             filename,
+             file_size);
+
+    if (send_all(socket_fd, command, strlen(command)) < 0)
+    {
+        fclose(file);
+        return -1;
+    }
+
+    char file_buffer[4096];
+    size_t bytes_read;
+    long total_sent = 0;
+
+    while ((bytes_read = fread(file_buffer,
+                               1,
+                               sizeof(file_buffer),
+                               file)) > 0)
+    {
+        if (send_all(socket_fd,
+                     file_buffer,
+                     bytes_read) < 0)
+        {
+            fclose(file);
+            return -1;
+        }
+
+        total_sent += (long)bytes_read;
+    }
+
+    fclose(file);
+
+    printf("[Controller] Sent: PUT %s %ld\n",
+           filename,
+           file_size);
+
+    printf("[Controller] Sent %ld file bytes.\n",
+           total_sent);
+
+    return 0;
+}
+
 int main(void)
 {
     int sock_fd;
@@ -194,6 +260,20 @@ if (recv_line(sock_fd,
 }
 
 printf("[Controller] Received: %s", buffer);
+
+ 
+             /*
+ * PUT
+ */
+if (send_file(sock_fd, "test_upload.txt") == 0)
+{
+    if (recv_line(sock_fd, buffer, sizeof(buffer)) == 0)
+    {
+        printf("[Controller] Received: %s", buffer);
+    }
+}
+
+
     /*
      * QUIT
      */
