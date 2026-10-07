@@ -4,6 +4,7 @@
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
+#include <pthread.h>
 
 #define PORT 9410
 #define BACKLOG 5
@@ -309,6 +310,543 @@ int execute_allowed_command(const char *command,
 
     return 0;
 }
+
+void *handle_client(void *arg)
+{
+    int client_fd = *(int *)arg;
+    free(arg);
+
+    int authenticated = 0;
+
+
+    while (1)
+    {
+        char buffer[BUFFER_SIZE];
+
+        if (recv_line(client_fd,
+              buffer,
+              sizeof(buffer)) < 0)
+        {
+        printf("[Agent] Controller disconnected.\n");
+        break;
+        }
+
+        printf("[Agent] Received: %s", buffer);
+
+        /*
+         * AUTH
+         */
+        if (strncmp(buffer, "AUTH ", 5) == 0)
+        {
+        char token[256];
+
+        memset(token, 0, sizeof(token));
+
+        sscanf(buffer + 5,
+               "%255s",
+               token);
+
+        if (strcmp(token, AUTH_TOKEN) == 0)
+        {
+            authenticated = 1;
+
+            char response[128];
+
+            snprintf(response,
+                 sizeof(response),
+                 "OK AUTHENTICATED SID:%s\n",
+                 SID);
+
+            send_all(client_fd,
+                 response,
+                 strlen(response));
+
+            printf("[Agent] Authentication successful.\n");
+            printf("[Agent] Sent: %s", response);
+        }
+        else
+        {
+            char response[128];
+
+            snprintf(response,
+                 sizeof(response),
+                 "ERR 001 AUTH_FAILED SID:%s\n",
+                 SID);
+
+            send_all(client_fd,
+                 response,
+                 strlen(response));
+
+            printf("[Agent] Authentication failed.\n");
+        }
+
+        continue;
+        }
+
+        /*
+         * QUIT can be handled after authentication.
+         */
+        if (strcmp(buffer, "QUIT\n") == 0)
+        {
+        char response[128];
+
+        snprintf(response,
+             sizeof(response),
+             "OK BYE SID:%s\n",
+             SID);
+
+        send_all(client_fd,
+             response,
+             strlen(response));
+
+        printf("[Agent] Sent: %s", response);
+
+        break;
+        }
+
+        /*
+         * Reject all commands before authentication.
+         */
+        if (!authenticated)
+        {
+        char response[128];
+
+        snprintf(response,
+             sizeof(response),
+             "ERR 001 AUTH_REQUIRED SID:%s\n",
+             SID);
+
+        send_all(client_fd,
+             response,
+             strlen(response));
+
+        printf("[Agent] Authentication required.\n");
+
+        continue;
+        }
+
+        /*
+         * SYSINFO
+         */
+        if (strcmp(buffer, "SYSINFO\n") == 0)
+        {
+        double cpu_load;
+        long memory_used_mb;
+        long uptime_sec;
+
+        if (get_sysinfo(&cpu_load,
+                &memory_used_mb,
+                &uptime_sec) == 0)
+        {
+            char response[256];
+
+            snprintf(response,
+                 sizeof(response),
+                 "OK SYSINFO %.2f %ld %ld SID:%s\n",
+                 cpu_load,
+                 memory_used_mb,
+                 uptime_sec,
+                 SID);
+
+            send_all(client_fd,
+                 response,
+                 strlen(response));
+
+            printf("[Agent] Sent: %s", response);
+        }
+        else
+        {
+            char response[128];
+
+            snprintf(response,
+                 sizeof(response),
+                 "ERR 003 SYSINFO_FAILED SID:%s\n",
+                 SID);
+
+            send_all(client_fd,
+                 response,
+                 strlen(response));
+        }
+
+        continue;
+        }
+
+          if (strcmp(buffer, "LISTPROC\n") == 0)
+{
+    char process_list[12000];
+    char response[14000];
+
+    memset(process_list, 0, sizeof(process_list));
+
+    if (get_process_list(process_list,
+             sizeof(process_list)) == 0)
+    {
+    snprintf(response,
+         sizeof(response),
+         "OK PROCS %s SID:%s\n",
+         process_list,
+         SID);
+
+    send_all(client_fd,
+         response,
+         strlen(response));
+
+    printf("[Agent] Sent LISTPROC response.\n");
+    }
+    else
+    {
+    char error_response[128];
+
+    snprintf(error_response,
+         sizeof(error_response),
+         "ERR 003 PROCESS_LIST_FAILED SID:%s\n",
+         SID);
+
+    send_all(client_fd,
+         error_response,
+         strlen(error_response));
+    }
+
+    continue;
+}
+     /*
+ * EXEC
+ */
+if (strncmp(buffer, "EXEC ", 5) == 0)
+{
+    char command_name[64];
+    char command_output[4096];
+    char response[8192];
+
+    memset(command_name, 0, sizeof(command_name));
+    memset(command_output, 0, sizeof(command_output));
+
+    /*
+     * Extract command after "EXEC ".
+     */
+    sscanf(buffer + 5,
+       "%63s",
+       command_name);
+
+    int result = execute_allowed_command(command_name,
+                     command_output,
+                     sizeof(command_output));
+
+    /*
+     * Command is not in the whitelist.
+     */
+    if (result == -2)
+    {
+    snprintf(response,
+         sizeof(response),
+         "ERR 002 COMMAND_NOT_ALLOWED SID:%s\n",
+         SID);
+
+    send_all(client_fd,
+         response,
+         strlen(response));
+
+    printf("[Agent] EXEC rejected: %s\n",
+           command_name);
+
+    continue;
+    }
+
+    /*
+     * Execution failed.
+     */
+    if (result == -1)
+    {
+    snprintf(response,
+         sizeof(response),
+         "ERR 003 EXEC_FAILED SID:%s\n",
+         SID);
+
+    send_all(client_fd,
+         response,
+         strlen(response));
+
+    continue;
+    }
+
+    /*
+     * Successful EXEC.
+     */
+    snprintf(response,
+         sizeof(response),
+         "OK EXEC_RESULT %s SID:%s\n",
+         command_output,
+         SID);
+
+    send_all(client_fd,
+         response,
+         strlen(response));
+
+    printf("[Agent] EXEC successful: %s\n",
+       command_name);
+
+    continue;
+}
+
+/*
+ * PUT
+ */
+if (strncmp(buffer, "PUT ", 4) == 0)
+{
+    char filename[256];
+    long file_size;
+
+    if (sscanf(buffer + 4,
+           "%255s %ld",
+           filename,
+           &file_size) != 2)
+    {
+    char response[128];
+
+    snprintf(response,
+         sizeof(response),
+         "ERR 400 UNKNOWN_COMMAND SID:%s\n",
+         SID);
+
+    send_all(client_fd,
+         response,
+         strlen(response));
+
+    continue;
+    }
+
+    if (file_size < 0 || file_size > MAX_FILE_SIZE)
+    {
+    char response[128];
+
+    snprintf(response,
+         sizeof(response),
+         "ERR 004 FILE_TOO_LARGE SID:%s\n",
+         SID);
+
+    send_all(client_fd,
+         response,
+         strlen(response));
+
+    continue;
+    }
+
+    if (strstr(filename, "..") != NULL ||
+    strchr(filename, '/') != NULL ||
+    strchr(filename, '\\') != NULL)
+    {
+    char response[128];
+
+    snprintf(response,
+         sizeof(response),
+         "ERR 400 UNKNOWN_COMMAND SID:%s\n",
+         SID);
+
+    send_all(client_fd,
+         response,
+         strlen(response));
+
+    continue;
+    }
+
+    char filepath[512];
+
+    snprintf(filepath,
+         sizeof(filepath),
+         "./agentfiles/IT24101220/%s",
+         filename);
+
+    FILE *file = fopen(filepath, "wb");
+
+    if (file == NULL)
+    {
+    perror("[Agent] fopen");
+
+    continue;
+    }
+
+    char file_buffer[4096];
+    long remaining = file_size;
+    int file_error = 0;
+
+    while (remaining > 0)
+    {
+    size_t chunk_size;
+
+    if (remaining > (long)sizeof(file_buffer))
+    {
+        chunk_size = sizeof(file_buffer);
+    }
+    else
+    {
+        chunk_size = (size_t)remaining;
+    }
+
+    if (recv_exact(client_fd,
+               file_buffer,
+               chunk_size) < 0)
+    {
+        file_error = 1;
+        break;
+    }
+
+    if (fwrite(file_buffer,
+           1,
+           chunk_size,
+           file) != chunk_size)
+    {
+        file_error = 1;
+        break;
+    }
+
+    remaining -= (long)chunk_size;
+    }
+
+    fclose(file);
+
+    if (file_error)
+    {
+    remove(filepath);
+
+    printf("[Agent] File transfer failed: %s\n",
+           filename);
+
+    continue;
+    }
+
+    printf("[Agent] File received: %s (%ld bytes)\n",
+       filename,
+       file_size);
+
+    char response[512];
+
+    snprintf(response,
+         sizeof(response),
+         "OK FILE_RECEIVED %s SID:%s\n",
+         filename,
+         SID);
+
+    send_all(client_fd,
+         response,
+         strlen(response));
+
+    continue;
+}
+        /*
+         * GET
+         */
+        if (strncmp(buffer, "GET ", 4) == 0)
+        {
+        char filename[256];
+
+        if (sscanf(buffer + 4, "%255s", filename) != 1)
+        {
+            char response[128];
+            snprintf(response, sizeof(response),
+                 "ERR 005 FILE_NOT_FOUND SID:%s\n", SID);
+            send_all(client_fd, response, strlen(response));
+            continue;
+        }
+
+        if (strstr(filename, "..") != NULL ||
+            strchr(filename, '/') != NULL ||
+            strchr(filename, '\\') != NULL)
+        {
+            char response[128];
+            snprintf(response, sizeof(response),
+                 "ERR 005 FILE_NOT_FOUND SID:%s\n", SID);
+            send_all(client_fd, response, strlen(response));
+            continue;
+        }
+
+        char filepath[512];
+        snprintf(filepath, sizeof(filepath),
+             "./agentfiles/IT24101220/%s", filename);
+
+        FILE *file = fopen(filepath, "rb");
+        if (file == NULL)
+        {
+            char response[128];
+            snprintf(response, sizeof(response),
+                 "ERR 005 FILE_NOT_FOUND SID:%s\n", SID);
+            send_all(client_fd, response, strlen(response));
+            continue;
+        }
+
+        fseek(file, 0, SEEK_END);
+        long file_size = ftell(file);
+        fseek(file, 0, SEEK_SET);
+
+        if (file_size < 0)
+        {
+            fclose(file);
+            continue;
+        }
+
+        char response[512];
+
+        snprintf(response, sizeof(response),
+             "OK FILE_SEND %s %ld SID:%s\n",
+             filename, file_size, SID);
+
+        if (send_all(client_fd,
+                 response,
+                 strlen(response)) < 0)
+        {
+            fclose(file);
+            break;
+        }
+
+        char file_buffer[4096];
+        size_t bytes_read;
+
+        while ((bytes_read = fread(file_buffer,
+                       1,
+                       sizeof(file_buffer),
+                       file)) > 0)
+        {
+            if (send_all(client_fd,
+                 file_buffer,
+                 bytes_read) < 0)
+            {
+            fclose(file);
+            break;
+            }
+        }
+
+        fclose(file);
+
+        printf("[Agent] File sent: %s (%ld bytes)\n",
+               filename,
+               file_size);
+
+        continue;
+        }
+
+        /*
+         * Unknown command.
+         */
+        {
+        char response[128];
+
+        snprintf(response,
+             sizeof(response),
+             "ERR 400 UNKNOWN_COMMAND SID:%s\n",
+             SID);
+
+        send_all(client_fd,
+             response,
+             strlen(response));
+        }
+    }
+
+    close(client_fd);
+
+    printf("[Agent] Controller connection closed.\n");
+
+    return NULL;
+}
+
 int main(void)
 {
     int server_fd;
@@ -384,532 +922,31 @@ int main(void)
 
         printf("[Agent] Controller connected.\n");
 
-        int authenticated = 0;
+        int *client_socket = malloc(sizeof(int));
 
-        while (1)
+        if (client_socket == NULL)
         {
-            char buffer[BUFFER_SIZE];
-
-            if (recv_line(client_fd,
-                          buffer,
-                          sizeof(buffer)) < 0)
-            {
-                printf("[Agent] Controller disconnected.\n");
-                break;
-            }
-
-            printf("[Agent] Received: %s", buffer);
-
-            /*
-             * AUTH
-             */
-            if (strncmp(buffer, "AUTH ", 5) == 0)
-            {
-                char token[256];
-
-                memset(token, 0, sizeof(token));
-
-                sscanf(buffer + 5,
-                       "%255s",
-                       token);
-
-                if (strcmp(token, AUTH_TOKEN) == 0)
-                {
-                    authenticated = 1;
-
-                    char response[128];
-
-                    snprintf(response,
-                             sizeof(response),
-                             "OK AUTHENTICATED SID:%s\n",
-                             SID);
-
-                    send_all(client_fd,
-                             response,
-                             strlen(response));
-
-                    printf("[Agent] Authentication successful.\n");
-                    printf("[Agent] Sent: %s", response);
-                }
-                else
-                {
-                    char response[128];
-
-                    snprintf(response,
-                             sizeof(response),
-                             "ERR 001 AUTH_FAILED SID:%s\n",
-                             SID);
-
-                    send_all(client_fd,
-                             response,
-                             strlen(response));
-
-                    printf("[Agent] Authentication failed.\n");
-                }
-
-                continue;
-            }
-
-            /*
-             * QUIT can be handled after authentication.
-             */
-            if (strcmp(buffer, "QUIT\n") == 0)
-            {
-                char response[128];
-
-                snprintf(response,
-                         sizeof(response),
-                         "OK BYE SID:%s\n",
-                         SID);
-
-                send_all(client_fd,
-                         response,
-                         strlen(response));
-
-                printf("[Agent] Sent: %s", response);
-
-                break;
-            }
-
-            /*
-             * Reject all commands before authentication.
-             */
-            if (!authenticated)
-            {
-                char response[128];
-
-                snprintf(response,
-                         sizeof(response),
-                         "ERR 001 AUTH_REQUIRED SID:%s\n",
-                         SID);
-
-                send_all(client_fd,
-                         response,
-                         strlen(response));
-
-                printf("[Agent] Authentication required.\n");
-
-                continue;
-            }
-
-            /*
-             * SYSINFO
-             */
-            if (strcmp(buffer, "SYSINFO\n") == 0)
-            {
-                double cpu_load;
-                long memory_used_mb;
-                long uptime_sec;
-
-                if (get_sysinfo(&cpu_load,
-                                &memory_used_mb,
-                                &uptime_sec) == 0)
-                {
-                    char response[256];
-
-                    snprintf(response,
-                             sizeof(response),
-                             "OK SYSINFO %.2f %ld %ld SID:%s\n",
-                             cpu_load,
-                             memory_used_mb,
-                             uptime_sec,
-                             SID);
-
-                    send_all(client_fd,
-                             response,
-                             strlen(response));
-
-                    printf("[Agent] Sent: %s", response);
-                }
-                else
-                {
-                    char response[128];
-
-                    snprintf(response,
-                             sizeof(response),
-                             "ERR 003 SYSINFO_FAILED SID:%s\n",
-                             SID);
-
-                    send_all(client_fd,
-                             response,
-                             strlen(response));
-                }
-
-                continue;
-            }
-
-              if (strcmp(buffer, "LISTPROC\n") == 0)
-{
-    char process_list[12000];
-    char response[14000];
-
-    memset(process_list, 0, sizeof(process_list));
-
-    if (get_process_list(process_list,
-                         sizeof(process_list)) == 0)
-    {
-        snprintf(response,
-                 sizeof(response),
-                 "OK PROCS %s SID:%s\n",
-                 process_list,
-                 SID);
-
-        send_all(client_fd,
-                 response,
-                 strlen(response));
-
-        printf("[Agent] Sent LISTPROC response.\n");
-    }
-    else
-    {
-        char error_response[128];
-
-        snprintf(error_response,
-                 sizeof(error_response),
-                 "ERR 003 PROCESS_LIST_FAILED SID:%s\n",
-                 SID);
-
-        send_all(client_fd,
-                 error_response,
-                 strlen(error_response));
-    }
-
-    continue;
-}
-         /*
- * EXEC
- */
-if (strncmp(buffer, "EXEC ", 5) == 0)
-{
-    char command_name[64];
-    char command_output[4096];
-    char response[8192];
-
-    memset(command_name, 0, sizeof(command_name));
-    memset(command_output, 0, sizeof(command_output));
-
-    /*
-     * Extract command after "EXEC ".
-     */
-    sscanf(buffer + 5,
-           "%63s",
-           command_name);
-
-    int result = execute_allowed_command(command_name,
-                                         command_output,
-                                         sizeof(command_output));
-
-    /*
-     * Command is not in the whitelist.
-     */
-    if (result == -2)
-    {
-        snprintf(response,
-                 sizeof(response),
-                 "ERR 002 COMMAND_NOT_ALLOWED SID:%s\n",
-                 SID);
-
-        send_all(client_fd,
-                 response,
-                 strlen(response));
-
-        printf("[Agent] EXEC rejected: %s\n",
-               command_name);
-
-        continue;
-    }
-
-    /*
-     * Execution failed.
-     */
-    if (result == -1)
-    {
-        snprintf(response,
-                 sizeof(response),
-                 "ERR 003 EXEC_FAILED SID:%s\n",
-                 SID);
-
-        send_all(client_fd,
-                 response,
-                 strlen(response));
-
-        continue;
-    }
-
-    /*
-     * Successful EXEC.
-     */
-    snprintf(response,
-             sizeof(response),
-             "OK EXEC_RESULT %s SID:%s\n",
-             command_output,
-             SID);
-
-    send_all(client_fd,
-             response,
-             strlen(response));
-
-    printf("[Agent] EXEC successful: %s\n",
-           command_name);
-
-    continue;
-}
-
-/*
- * PUT
- */
-if (strncmp(buffer, "PUT ", 4) == 0)
-{
-    char filename[256];
-    long file_size;
-
-    if (sscanf(buffer + 4,
-               "%255s %ld",
-               filename,
-               &file_size) != 2)
-    {
-        char response[128];
-
-        snprintf(response,
-                 sizeof(response),
-                 "ERR 400 UNKNOWN_COMMAND SID:%s\n",
-                 SID);
-
-        send_all(client_fd,
-                 response,
-                 strlen(response));
-
-        continue;
-    }
-
-    if (file_size < 0 || file_size > MAX_FILE_SIZE)
-    {
-        char response[128];
-
-        snprintf(response,
-                 sizeof(response),
-                 "ERR 004 FILE_TOO_LARGE SID:%s\n",
-                 SID);
-
-        send_all(client_fd,
-                 response,
-                 strlen(response));
-
-        continue;
-    }
-
-    if (strstr(filename, "..") != NULL ||
-        strchr(filename, '/') != NULL ||
-        strchr(filename, '\\') != NULL)
-    {
-        char response[128];
-
-        snprintf(response,
-                 sizeof(response),
-                 "ERR 400 UNKNOWN_COMMAND SID:%s\n",
-                 SID);
-
-        send_all(client_fd,
-                 response,
-                 strlen(response));
-
-        continue;
-    }
-
-    char filepath[512];
-
-    snprintf(filepath,
-             sizeof(filepath),
-             "./agentfiles/IT24101220/%s",
-             filename);
-
-    FILE *file = fopen(filepath, "wb");
-
-    if (file == NULL)
-    {
-        perror("[Agent] fopen");
-
-        continue;
-    }
-
-    char file_buffer[4096];
-    long remaining = file_size;
-    int file_error = 0;
-
-    while (remaining > 0)
-    {
-        size_t chunk_size;
-
-        if (remaining > (long)sizeof(file_buffer))
-        {
-            chunk_size = sizeof(file_buffer);
-        }
-        else
-        {
-            chunk_size = (size_t)remaining;
+            perror("malloc");
+            close(client_fd);
+            continue;
         }
 
-        if (recv_exact(client_fd,
-                       file_buffer,
-                       chunk_size) < 0)
+        *client_socket = client_fd;
+
+        pthread_t thread_id;
+
+        if (pthread_create(&thread_id,
+                           NULL,
+                           handle_client,
+                           client_socket) != 0)
         {
-            file_error = 1;
-            break;
+            perror("pthread_create");
+            free(client_socket);
+            close(client_fd);
+            continue;
         }
 
-        if (fwrite(file_buffer,
-                   1,
-                   chunk_size,
-                   file) != chunk_size)
-        {
-            file_error = 1;
-            break;
-        }
-
-        remaining -= (long)chunk_size;
-    }
-
-    fclose(file);
-
-    if (file_error)
-    {
-        remove(filepath);
-
-        printf("[Agent] File transfer failed: %s\n",
-               filename);
-
-        continue;
-    }
-
-    printf("[Agent] File received: %s (%ld bytes)\n",
-           filename,
-           file_size);
-
-    char response[512];
-
-    snprintf(response,
-             sizeof(response),
-             "OK FILE_RECEIVED %s SID:%s\n",
-             filename,
-             SID);
-
-    send_all(client_fd,
-             response,
-             strlen(response));
-
-    continue;
-}
-            /*
-             * GET
-             */
-            if (strncmp(buffer, "GET ", 4) == 0)
-            {
-                char filename[256];
-
-                if (sscanf(buffer + 4, "%255s", filename) != 1)
-                {
-                    char response[128];
-                    snprintf(response, sizeof(response),
-                             "ERR 005 FILE_NOT_FOUND SID:%s\n", SID);
-                    send_all(client_fd, response, strlen(response));
-                    continue;
-                }
-
-                if (strstr(filename, "..") != NULL ||
-                    strchr(filename, '/') != NULL ||
-                    strchr(filename, '\\') != NULL)
-                {
-                    char response[128];
-                    snprintf(response, sizeof(response),
-                             "ERR 005 FILE_NOT_FOUND SID:%s\n", SID);
-                    send_all(client_fd, response, strlen(response));
-                    continue;
-                }
-
-                char filepath[512];
-                snprintf(filepath, sizeof(filepath),
-                         "./agentfiles/IT24101220/%s", filename);
-
-                FILE *file = fopen(filepath, "rb");
-                if (file == NULL)
-                {
-                    char response[128];
-                    snprintf(response, sizeof(response),
-                             "ERR 005 FILE_NOT_FOUND SID:%s\n", SID);
-                    send_all(client_fd, response, strlen(response));
-                    continue;
-                }
-
-                fseek(file, 0, SEEK_END);
-                long file_size = ftell(file);
-                fseek(file, 0, SEEK_SET);
-
-                if (file_size < 0)
-                {
-                    fclose(file);
-                    continue;
-                }
-
-                char response[512];
-
-                snprintf(response, sizeof(response),
-                         "OK FILE_SEND %s %ld SID:%s\n",
-                         filename, file_size, SID);
-
-                if (send_all(client_fd,
-                             response,
-                             strlen(response)) < 0)
-                {
-                    fclose(file);
-                    break;
-                }
-
-                char file_buffer[4096];
-                size_t bytes_read;
-
-                while ((bytes_read = fread(file_buffer,
-                                           1,
-                                           sizeof(file_buffer),
-                                           file)) > 0)
-                {
-                    if (send_all(client_fd,
-                                 file_buffer,
-                                 bytes_read) < 0)
-                    {
-                        fclose(file);
-                        break;
-                    }
-                }
-
-                fclose(file);
-
-                printf("[Agent] File sent: %s (%ld bytes)\n",
-                       filename,
-                       file_size);
-
-                continue;
-            }
-
-            /*
-             * Unknown command.
-             */
-            {
-                char response[128];
-
-                snprintf(response,
-                         sizeof(response),
-                         "ERR 400 UNKNOWN_COMMAND SID:%s\n",
-                         SID);
-
-                send_all(client_fd,
-                         response,
-                         strlen(response));
-            }
-        }
-
-        close(client_fd);
-
-        printf("[Agent] Controller connection closed.\n");
+        pthread_detach(thread_id);
     }
 
     close(server_fd);
