@@ -32,6 +32,28 @@ int send_all(int socket_fd, const char *data, size_t length)
     return 0;
 }
 
+int recv_exact(int socket_fd, char *buffer, size_t length)
+{
+    size_t total_received = 0;
+
+    while (total_received < length)
+    {
+        ssize_t received = recv(socket_fd,
+                                buffer + total_received,
+                                length - total_received,
+                                0);
+
+        if (received <= 0)
+        {
+            return -1;
+        }
+
+        total_received += (size_t)received;
+    }
+
+    return 0;
+}
+
 int recv_line(int socket_fd, char *buffer, size_t size)
 {
     size_t position = 0;
@@ -125,6 +147,107 @@ int send_file(int socket_fd, const char *filename)
 
     printf("[Controller] Sent %ld file bytes.\n",
            total_sent);
+
+    return 0;
+}
+
+int receive_file(int socket_fd, const char *filename)
+{
+    char command[BUFFER_SIZE];
+    char response[BUFFER_SIZE];
+
+    snprintf(command, sizeof(command),
+             "GET %s\n", filename);
+
+    if (send_all(socket_fd, command, strlen(command)) < 0)
+    {
+        return -1;
+    }
+
+    printf("[Controller] Sent: GET %s\n", filename);
+
+    if (recv_line(socket_fd,
+                  response,
+                  sizeof(response)) < 0)
+    {
+        printf("[Controller] Connection closed.\n");
+        return -1;
+    }
+
+    printf("[Controller] Received: %s", response);
+
+    if (strncmp(response, "OK FILE_SEND ", 13) != 0)
+    {
+        printf("[Controller] GET failed.\n");
+        return -1;
+    }
+
+    char received_filename[256];
+    char session_id[32];
+    long file_size;
+
+    if (sscanf(response,
+               "OK FILE_SEND %255s %ld SID:%31s",
+               received_filename,
+               &file_size,
+               session_id) != 3)
+    {
+        printf("[Controller] Invalid FILE_SEND response.\n");
+        return -1;
+    }
+
+    if (file_size < 0)
+    {
+        printf("[Controller] Invalid file size.\n");
+        return -1;
+    }
+
+    FILE *file = fopen("downloaded_test_upload.txt", "wb");
+
+    if (file == NULL)
+    {
+        perror("[Controller] fopen");
+        return -1;
+    }
+
+    char file_buffer[4096];
+    long remaining = file_size;
+
+    while (remaining > 0)
+    {
+        size_t chunk_size = sizeof(file_buffer);
+
+        if (remaining < (long)chunk_size)
+        {
+            chunk_size = (size_t)remaining;
+        }
+
+        if (recv_exact(socket_fd,
+                       file_buffer,
+                       chunk_size) < 0)
+        {
+            fclose(file);
+            printf("[Controller] File transfer interrupted.\n");
+            return -1;
+        }
+
+        if (fwrite(file_buffer,
+                   1,
+                   chunk_size,
+                   file) != chunk_size)
+        {
+            fclose(file);
+            printf("[Controller] File write failed.\n");
+            return -1;
+        }
+
+        remaining -= (long)chunk_size;
+    }
+
+    fclose(file);
+
+    printf("[Controller] Received %ld file bytes.\n", file_size);
+    printf("[Controller] Saved downloaded file: downloaded_test_upload.txt\n");
 
     return 0;
 }
@@ -273,6 +396,14 @@ if (send_file(sock_fd, "test_upload.txt") == 0)
     }
 }
 
+
+    /*
+     * GET
+     */
+    if (receive_file(sock_fd, "test_upload.txt") < 0)
+    {
+        printf("[Controller] GET failed.\n");
+    }
 
     /*
      * QUIT

@@ -800,6 +800,97 @@ if (strncmp(buffer, "PUT ", 4) == 0)
     continue;
 }
             /*
+             * GET
+             */
+            if (strncmp(buffer, "GET ", 4) == 0)
+            {
+                char filename[256];
+
+                if (sscanf(buffer + 4, "%255s", filename) != 1)
+                {
+                    char response[128];
+                    snprintf(response, sizeof(response),
+                             "ERR 005 FILE_NOT_FOUND SID:%s\n", SID);
+                    send_all(client_fd, response, strlen(response));
+                    continue;
+                }
+
+                if (strstr(filename, "..") != NULL ||
+                    strchr(filename, '/') != NULL ||
+                    strchr(filename, '\\') != NULL)
+                {
+                    char response[128];
+                    snprintf(response, sizeof(response),
+                             "ERR 005 FILE_NOT_FOUND SID:%s\n", SID);
+                    send_all(client_fd, response, strlen(response));
+                    continue;
+                }
+
+                char filepath[512];
+                snprintf(filepath, sizeof(filepath),
+                         "./agentfiles/IT24101220/%s", filename);
+
+                FILE *file = fopen(filepath, "rb");
+                if (file == NULL)
+                {
+                    char response[128];
+                    snprintf(response, sizeof(response),
+                             "ERR 005 FILE_NOT_FOUND SID:%s\n", SID);
+                    send_all(client_fd, response, strlen(response));
+                    continue;
+                }
+
+                fseek(file, 0, SEEK_END);
+                long file_size = ftell(file);
+                fseek(file, 0, SEEK_SET);
+
+                if (file_size < 0)
+                {
+                    fclose(file);
+                    continue;
+                }
+
+                char response[512];
+
+                snprintf(response, sizeof(response),
+                         "OK FILE_SEND %s %ld SID:%s\n",
+                         filename, file_size, SID);
+
+                if (send_all(client_fd,
+                             response,
+                             strlen(response)) < 0)
+                {
+                    fclose(file);
+                    break;
+                }
+
+                char file_buffer[4096];
+                size_t bytes_read;
+
+                while ((bytes_read = fread(file_buffer,
+                                           1,
+                                           sizeof(file_buffer),
+                                           file)) > 0)
+                {
+                    if (send_all(client_fd,
+                                 file_buffer,
+                                 bytes_read) < 0)
+                    {
+                        fclose(file);
+                        break;
+                    }
+                }
+
+                fclose(file);
+
+                printf("[Agent] File sent: %s (%ld bytes)\n",
+                       filename,
+                       file_size);
+
+                continue;
+            }
+
+            /*
              * Unknown command.
              */
             {
