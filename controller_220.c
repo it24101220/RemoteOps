@@ -363,27 +363,48 @@ printf("[Controller] Received: %s", buffer);
 
 
      /*
- * EXEC DATE
+ * EXEC UPTIME
  */
-const char *exec_command = "EXEC UPTIME\n";
-
-send_all(sock_fd,
-         exec_command,
-         strlen(exec_command));
-
-printf("[Controller] Sent: %s", exec_command);
-
-if (recv_line(sock_fd,
-              buffer,
-              sizeof(buffer)) < 0)
+/*
+ * Test all allowed EXEC commands and one rejected command.
+ */
+const char *exec_tests[] =
 {
-    printf("[Controller] Connection closed.\n");
-    close(sock_fd);
-    return 1;
+    "EXEC DATE\n",
+    "EXEC UPTIME\n",
+    "EXEC DISKFREE\n",
+    "EXEC HOSTNAME\n",
+    "EXEC WHOAMI\n",
+    "EXEC BADCOMMAND\n"
+};
+
+size_t exec_test_count =
+    sizeof(exec_tests) / sizeof(exec_tests[0]);
+
+for (size_t i = 0; i < exec_test_count; i++)
+{
+    const char *exec_command = exec_tests[i];
+
+    if (send_all(sock_fd,
+                 exec_command,
+                 strlen(exec_command)) < 0)
+    {
+        perror("[Controller] Failed to send EXEC command");
+        close(sock_fd);
+        return 1;
+    }
+
+    printf("[Controller] Sent: %s", exec_command);
+
+    if (recv_line(sock_fd, buffer, sizeof(buffer)) < 0)
+    {
+        printf("[Controller] Connection closed during EXEC test.\n");
+        close(sock_fd);
+        return 1;
+    }
+
+    printf("[Controller] Received: %s", buffer);
 }
-
-printf("[Controller] Received: %s", buffer);
-
  
              /*
  * PUT
